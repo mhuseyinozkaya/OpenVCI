@@ -25,7 +25,7 @@
 #define DEBUG_MODE 0
 
 /* Controls MCP_LOOPBACK mode */
-#define LOOPBACK_MODE 1
+#define LOOPBACK_MODE 0
 
 #include <mcp_can.h>
 #include <mcp_can_dfs.h>
@@ -33,13 +33,11 @@
 #include <SPI.h>
 
 /* UPDATE THIS VALUES ACCORDING TO YOUR HARDWARE */
-#define SERIAL_BAUDRATE 115200
+#define SERIAL_BAUDRATE 500000
 #define MCP2515_CRYSTAL_SPEED MCP_8MHZ
 
-// MCP2515 INT pin
-#define CAN0_INT 2
-// Create a new CAN object instance, CS pin default 10
-MCP_CAN CAN0(10);
+#define CAN0_INT 2  // MCP2515 INT pin
+MCP_CAN CAN0(10);   // Create a new CAN object instance, CS pin default 10
 /* UPDATE THIS VALUES ACCORDING TO YOUR HARDWARE */
 
 // Default CAN Bus speed

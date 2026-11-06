@@ -1,159 +1,99 @@
-# Arduino MCP2515 SLCAN Adaptörü
+# OpenVCI - Open Vehicle Communication Interface
 
-Arduino Uno + MCP2515 CAN kontrolcüsü kullanarak, aracın CAN bus'ını Linux
-SocketCAN arayüzüne (`can0`, `slcan0` vb.) bağlayan bir SLCAN (LAWICEL)
-protokol implementasyonu.
+**English** | [Türkçe](README.tr.md)
 
-## İçindekiler
+VCI (Vehicle Communication Interface) devices used for vehicle diagnostics
+are usually expensive, closed source and tied to specific software.
+**OpenVCI** aims to provide a foundation that lets anyone connect to and
+diagnose their vehicle with whatever they have at hand: cheap, widely
+available hardware and open source software.
 
-- [Arduino MCP2515 SLCAN Adaptörü](#arduino-mcp2515-slcan-adaptörü)
-  - [İçindekiler](#i̇çindekiler)
-  - [Donanım](#donanım)
-  - [Firmware](#firmware)
-  - [Kurulum ve Bağlantı](#kurulum-ve-bağlantı)
-    - [1. Firmware'i yükle](#1-firmwarei-yükle)
-    - [2. can-utils kur](#2-can-utils-kur)
-  - [socat + slcand neden gerekli](#socat--slcand-neden-gerekli)
-    - [Çalıştırma](#çalıştırma)
-  - [Kullanım Örnekleri](#kullanım-örnekleri)
-    - [CAN trafiğini izleme](#can-trafiğini-izleme)
-    - [Belirli ID aralığını filtreleme (OBD-II cevap ID'leri)](#belirli-id-aralığını-filtreleme-obd-ii-cevap-idleri)
-    - [Timestamp'li log alma (SavvyCAN ile analiz için)](#timestampli-log-alma-savvycan-ile-analiz-için)
-    - [OBD-II sorgu örnekleri](#obd-ii-sorgu-örnekleri)
-  - [Sorun Giderme](#sorun-giderme)
+OpenVCI is not tied to a specific board, controller or protocol. Rather
+than shipping a finished diagnostic program, the goal is to provide an open
+infrastructure that anyone can use with their own hardware and build their
+own diagnostic software on top of.
 
----
+OpenVCI is the hardware layer of a larger project that includes desktop
+and mobile diagnostic applications with LLM-based summarization.
 
-## Donanım
+## What OpenVCI Provides
 
-- Arduino Uno
-- MCP2515 CAN kontrolcü modülü (8 MHz kristal)
-- CS pini: **10**
-- INT pini: **2**
-- SPI: standart Uno pinleri (MOSI 11, MISO 12, SCK 13)
+- **Ready-to-use hardware and software:** Tested adapter firmwares and host
+  tools.
+- **Vehicle knowledge base:** How to connect to real vehicles. Even within
+  the same model, the platform, pinout and supported protocols can change
+  from year to year, so every vehicle we test is documented by make, model
+  and year.
 
-## Firmware
+## Architecture
 
-Arduino tarafında çalışan `.ino` dosyası, seri port üzerinden gelen
-**SLCAN (LAWICEL)** komutlarını yorumlayıp MCP2515 üzerinden CAN bus'a
-aktarır, gelen CAN mesajlarını da aynı formatta seri porta geri yazar.
+OpenVCI is made of independent layers. Each layer can be swapped for a
+different implementation without changing the others.
 
-Desteklenen komutlar:
+| Layer | Role | Examples |
+|-------|------|----------|
+| **Vehicle network** | The communication bus in the vehicle | CAN, CAN FD, Automotive Ethernet (DoIP) |
+| **Adapter hardware** | Physical access to the vehicle network | Arduino, ESP32, STM32 + MCP2515, SN65HVD230, built-in CAN peripheral |
+| **Adapter firmware** | Bridge protocol between the vehicle network and the host | SLCAN (LAWICEL), ELM327 AT command set |
+| **Link** | How the adapter connects to the host | USB serial, Bluetooth, Wi-Fi (TCP) |
+| **Host** | The side that processes the data | Linux SocketCAN, `can-utils`, SavvyCAN, your own diagnostic software |
 
-| Komut | Açıklama |
-|-------|----------|
-| `O\r` | Kanalı aç |
-| `C\r` | Kanalı kapat |
-| `Sn\r` | Baud rate ayarla (`n`: 0-8, örn. `S6` = 500 kbps) |
-| `tIIILDD...\r` | Standart CAN frame gönder (ID, uzunluk, data) |
+Adding a new board, controller, protocol or link only requires writing the
+relevant layer.
 
-Seri port hızı: **115200 baud**.
+## Project Layout
 
----
+```
+.
+├── firmware/      # Adapter firmwares: firmware/<platform>/<board>/...
+├── docs/          # Vehicle knowledge base: docs/<make>/<model>/<year>/
+└── can-up.sh      # Brings up SLCAN adapters as a SocketCAN interface on Linux
+```
 
-## Kurulum ve Bağlantı
+Each firmware lives in its own folder together with a `README` describing
+the supported hardware, wiring and setup steps.
 
-### 1. Firmware'i yükle
+Documents are written in English (`*.md`) and Turkish (`*.tr.md`).
 
-Arduino IDE ile `.ino` dosyasını karta yükle (Board: Arduino Uno, doğru
-Port seçili olmalı).
+## Available Implementations
 
-### 2. can-utils kur
+| Firmware | Hardware | Protocol | Link |
+|----------|----------|----------|------|
+| [slcan_mcp2515_firmware_uno](firmware/arduino/uno/can/slcan_mcp2515_firmware_uno/README.md) | Arduino Uno + MCP2515 | SLCAN | USB |
+| [slcan_mcp2515_bt_hm10_firmware_uno](firmware/arduino/uno/can/slcan_mcp2515_bt_hm10_firmware_uno/) | Arduino Uno + MCP2515 + HM-10 | SLCAN | Bluetooth |
+
+## Host Side (Linux)
+
+Any adapter that speaks SLCAN can be turned into a SocketCAN interface with
+`can-up.sh`:
 
 ```bash
 sudo apt install can-utils socat
-```
-Bu script `socat` ve `slcand`'i sırasıyla başlatıp `slcan0` arayüzünü
-ayağa kaldırır. Detaylar için aşağıdaki bölüme bakın.
-
----
-
-## socat + slcand neden gerekli
-
-`slcand`'in doğrudan gerçek TTY cihazına (`/dev/ttyUSB0`, `/dev/ttyACM0`)
-bağlanması **denendi ve güvenilir çalışmadı** — `-S` (baud rate) parametresi
-ve DTR/RTS ayarları ne şekilde verilirse verilsin, `slcand` karta bağlanıp
-kanalı açmasına rağmen komutlar işlenmiyordu.
-
-**Çözüm:** `socat`, gerçek seri portu (doğru baud rate ve raw modda) açıp
-bir **PTY**'ye köprüler. `slcand` gerçek donanıma değil, bu PTY'ye bağlanır
-
-```
-[Arduino/MCP2515] <--USB (gerçek TTY)--> [socat] <--PTY--> [slcand] <--> [slcan0]
+./can-up.sh -d /dev/ttyUSB0 -b 500k -i can0
+candump can0
 ```
 
-### Çalıştırma
+| Option | Description | Default |
+|--------|-------------|---------|
+| `-d` | Serial device or socat address (e.g. `tcp:IP:PORT`) | `/dev/ttyUSB0` |
+| `-b` | CAN bitrate (`10k` … `1M`) | `500k` |
+| `-i` | Interface name | `can0` |
+| `-s` | Serial baud rate of the adapter | `115200` |
 
-```bash
-# 1. socat ile gerçek portu PTY'ye köprüle
-socat -x -d -d pty,raw,echo=0,b115200 FILE:/dev/ttyUSB0,raw,echo=0,b115200
+## Vehicle Knowledge Base
 
-# Çıktıda şöyle bir satır göreceksin, PTY yolunu not al:
-#   PTY is /dev/pts/3
+[`docs/`](docs/README.md) documents how to connect to each tested vehicle:
+OBD-II pinout, networks and bitrates, and supported diagnostic protocols
+(OBD-II, UDS, …), so users can choose the right hardware for their vehicle.
+Every vehicle document follows the same [template](docs/TEMPLATE.md).
 
-# 2. Başka bir terminalde, slcand'i PTY'ye bağla
-sudo slcand -o -c -s6 /dev/pts/3 slcan0
+## Warning
 
-# 3. Arayüzü ayağa kaldır
-sudo ip link set up slcan0
+Connecting to a vehicle's communication bus can damage the vehicle if done
+incorrectly. Start by only listening on the bus, and make sure you know
+what you are doing before sending any message to the vehicle. The software
+and documents are provided for use at your own risk.
 
-# 4. Test et
-candump slcan0
-```
+## License
 
-## Kullanım Örnekleri
-
-### CAN trafiğini izleme
-
-```bash
-candump slcan0
-```
-
-### Belirli ID aralığını filtreleme (OBD-II cevap ID'leri)
-
-```bash
-candump slcan0,7E8:7F8
-```
-
-### Timestamp'li log alma (SavvyCAN ile analiz için)
-
-```bash
-candump -l slcan0
-```
-
-Bu, çalışılan dizinde `candump-<tarih>_<saat>.log` dosyası oluşturur.
-Bu dosya SavvyCAN'de **"CANDump"** formatı seçilerek doğrudan
-açılabilir.
-
-### OBD-II sorgu örnekleri
-
-```bash
-# Desteklenen PID'ler (Mode 01)
-cansend slcan0 7DF#0201000000000000
-
-# Motor RPM (PID 0C)
-cansend slcan0 7DF#02010C0000000000
-
-# Stored DTC (Mode 03)
-cansend slcan0 7DF#0103000000000000
-
-# Pending DTC (Mode 07)
-cansend slcan0 7DF#0107000000000000
-
-# MIL durumu / monitor status (Mode 01 PID 01)
-cansend slcan0 7DF#0201010000000000
-```
-
-Cevaplar `7E8`–`7EF` aralığındaki ID'lerden gelir (araçtaki cevap veren
-ECU sayısına göre değişir).
-
----
-
-## Sorun Giderme
-
-| Belirti | Olası sebep | Çözüm |
-|---|---|---|
-| Kanal açılıyor ama komutlara cevap yok | `slcand` doğrudan gerçek TTY'ye bağlı | `socat` + PTY yöntemini kullan |
-| `candump`'ta hiçbir şey görünmüyor | Yanlış arayüz adı / kanal açılmamış | `ip link show slcan0` ile durumu kontrol et |
-| MCP2515 `begin()` başarısız dönüyor | SPI kablo bağlantısı / lehim sorunu | `MCP_LOOPBACK` modunda test ederek SPI zincirini doğrula |
-| Loopback testinde hiç veri dönmüyor | Firmware kartta çalışmıyor olabilir | Setup'a benzersiz bir `Serial.println()` debug satırı ekleyip doğrula |
+[GNU GPL v3](LICENSE)
