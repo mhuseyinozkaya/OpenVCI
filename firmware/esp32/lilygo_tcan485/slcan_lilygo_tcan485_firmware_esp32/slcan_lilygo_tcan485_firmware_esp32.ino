@@ -8,6 +8,7 @@
 #define SERIAL_PORT_BAUDRATE 500000
 #define PORT_READ_TIMEOUT_MS 50
 #define CAN_TX_TIMEOUT_MS    30
+#define CAN_RX_QUEUE_LEN     128
 
 #define PIN_5V_EN      16  // Enables the on-board 5V boost regulator (ME2107)
 #define CAN_SE_PIN     23  // CAN transceiver slope/standby mode pin (LOW = High-Speed / Active)
@@ -48,12 +49,14 @@ static const struct bluetooth_config bt_config = {
 
 /* Default global program variables */
 twai_timing_config_t t_config = TWAI_TIMING_CONFIG_500KBITS();  // Default CAN bus speed 500KBps
+twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 WiFiServer tcp_server(wf_config.port);
 WiFiClient tcp_client;
 BluetoothSerial bt_serial;
 
 static bool canbus_open = false;
 static bool wifi_enabled = false;
+static bool filter_active = false;
 char sl_rx_buffer[30]; // Receive buffer for SLCAN commands
 char sl_tx_buffer[30]; // Transmit buffer for SLCAN frames
 
@@ -63,8 +66,7 @@ bool can_open() {
 #else
     twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_PIN, CAN_RX_PIN, TWAI_MODE_NORMAL);
 #endif
-    // No filtered, all packets will be accepted
-    twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
+    g_config.rx_queue_len = CAN_RX_QUEUE_LEN;
     if (twai_driver_install(&g_config, &t_config, &f_config) != ESP_OK) return false;
     if (twai_start() != ESP_OK) {
         twai_driver_uninstall();
@@ -105,6 +107,51 @@ bool set_can_bus_speed(int speed){
       return false;
   }
   return true;
+}
+
+bool set_can_hardware_filter(const char *hex_str){
+  size_t len = strlen(hex_str);
+  if(len != 3 && len != 8){
+    return false; // 3 hex digits = 11-bit Standard ID, 8 hex digits = 29-bit Extended ID
+  }
+
+  uint32_t id = 0;
+  for(size_t i = 0; i < len; ++i){
+    char c = hex_str[i];
+    if(!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f'))){
+      return false;
+    }
+    id = (id << 4) | (uint32_t)ascii_to_hex(c);
+  }
+
+  uint32_t new_code;
+  uint32_t new_mask;
+
+  if(len == 3){
+    if(id > 0x7FFUL) return false;
+    new_code = (id & 0x7FFUL) << 21;
+    new_mask = ~(0x7FFUL << 21);
+  }else{
+    if(id > 0x1FFFFFFFUL) return false;
+    new_code = (id & 0x1FFFFFFFUL) << 3;
+    new_mask = ~(0x1FFFFFFFUL << 3);
+  }
+
+  if(!filter_active){
+    f_config.acceptance_code = new_code;
+    f_config.acceptance_mask = new_mask;
+    filter_active = true;
+  }else{
+    // Widen hardware acceptance mask to keep previously added IDs alongside the new ID
+    f_config.acceptance_mask |= new_mask | (f_config.acceptance_code ^ new_code);
+  }
+  f_config.single_filter = true;
+  return true;
+}
+
+void clear_can_hardware_filter(){
+  f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
+  filter_active = false;
 }
 
 void update_mode_led(){
@@ -306,6 +353,19 @@ void lawicel_parser(Stream &port){
     if(wifi_enabled){
       stop_wifi();
     }
+  }
+  // Set hardware-level CAN ID filter ('M7E8' for 11-bit, 'M18DAF110' for 29-bit)
+  else if(sl_rx_buffer[0] == 'M'){
+    if(set_can_hardware_filter(&sl_rx_buffer[1])){
+      send_ack(port);
+    }else{
+      send_nack(port);
+    }
+  }
+  // Clear hardware-level CAN ID filter ('m')
+  else if(!strcmp(sl_rx_buffer, "m")){
+    clear_can_hardware_filter();
+    send_ack(port);
   }
   // Standard ('t') or Extended ('T') CAN frame transmission
   else if(sl_rx_buffer[0] == 'T' || sl_rx_buffer[0] == 't'){
